@@ -211,3 +211,4 @@ Notion データベースに手動で行を追加:
 
 MIT
 # news_tracker
+# news_tracker
