@@ -1,0 +1,29 @@
+name: Daily Dev Digest
+
+on:
+  schedule:
+    # 8:00 JST = 23:00 UTC (previous day)
+    - cron: '0 23 * * *'
+  workflow_dispatch:
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Daily Digest
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          TARGET_GITHUB_USERNAME: ${{ vars.TARGET_GITHUB_USERNAME || 'HayatoShimada' }}
+        run: python daily_digest.py
