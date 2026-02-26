@@ -10,11 +10,24 @@ import requests
 
 # --- Configuration ---
 
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-NOTION_TOKEN = os.environ["NOTION_TOKEN"]
-NOTION_DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
+NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 TARGET_GITHUB_USERNAME = os.environ.get("TARGET_GITHUB_USERNAME", "HayatoShimada")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
+NOTION_LOG_DATABASE_ID = os.environ.get("NOTION_LOG_DATABASE_ID", "")
+
+missing_vars = []
+if not ANTHROPIC_API_KEY:
+    missing_vars.append("ANTHROPIC_API_KEY")
+if not NOTION_TOKEN:
+    missing_vars.append("NOTION_TOKEN")
+if not NOTION_DATABASE_ID:
+    missing_vars.append("NOTION_DATABASE_ID")
+
+if missing_vars:
+    raise ValueError(f"Required environment variables are missing or empty: {', '.join(missing_vars)}")
 
 NOTION_API_VERSION = "2022-06-28"
 NOTION_BASE_URL = "https://api.notion.com/v1"
@@ -27,58 +40,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Claude system prompt ---
+# --- Prompt ---
 
-SYSTEM_PROMPT = """\
-You are a personal development assistant that creates a daily digest for a software developer.
-Analyze the developer's recent GitHub activity, answer their pending requests,
-and provide actionable suggestions.
-
-## Output Format
-
-Respond with a single JSON code block (```json ... ```) containing exactly this structure:
-
-{
-  "digest_summary": "3-5 paragraph summary in Japanese of today's development situation and recommendations.",
-  "learning": [
-    {"title": "学習テーマ", "description": "1-2文の説明", "tags": ["tag1", "tag2"]}
-  ],
-  "news": [
-    {"title": "ニュース見出し", "description": "1-2文の要約（ソースURL付き）", "tags": ["tag1"]}
-  ],
-  "action": [
-    {"title": "アクション", "description": "具体的な内容", "priority": "High|Medium|Low", "tags": ["tag1"]}
-  ],
-  "idea": [
-    {"title": "アイデア", "description": "概要と価値", "tags": ["tag1"]}
-  ],
-  "request_answers": [
-    {"request_id": "page-id", "answer_summary": "回答の要約"}
-  ]
-}
-
-## Constraints
-
-- learning: exactly 3 items. Directly relevant to the developer's current projects.
-- news: exactly 3 items. Use web search to find real, current tech news. Include actual URLs. Do NOT fabricate.
-- action: 3 to 5 items. Each must have a priority. Concrete and achievable today.
-- idea: 1 to 2 items.
-- request_answers: one entry per pending request. Empty array if no requests.
-- All text content in Japanese. Tags in lowercase English.
-
-## Rating Feedback
-
-The developer rates past suggestions (★1-5).
-- Increase suggestions similar to ★4-5 items.
-- Decrease or avoid suggestions similar to ★1-2 items.
-
-## Web Search
-
-Use web search to find:
-1. Real, current tech news relevant to the developer's activity.
-2. Information to answer pending requests.
-"""
-
+def load_system_prompt() -> str:
+    prompt_path = os.path.join(os.path.dirname(__file__), "prompt.md")
+    try:
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        logger.warning("prompt.md not found. Using fallback prompt.")
+        return "You are a personal development assistant."
 
 # --- GitHub ---
 
@@ -280,6 +251,7 @@ def generate_digest(
     github_activity: str,
     pending_requests: list[dict],
     rating_feedback: str,
+    system_prompt: str,
 ) -> dict:
     """Call Claude API with web search to generate digest content."""
     client = anthropic.Anthropic()
@@ -303,7 +275,7 @@ def generate_digest(
     response = client.messages.create(
         model="claude-sonnet-4-5-20250929",
         max_tokens=4096,
-        system=SYSTEM_PROMPT,
+        system=system_prompt,
         tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
         messages=messages,
     )
@@ -315,7 +287,7 @@ def generate_digest(
         response = client.messages.create(
             model="claude-sonnet-4-5-20250929",
             max_tokens=4096,
-            system=SYSTEM_PROMPT,
+            system=system_prompt,
             tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
             messages=messages,
         )
@@ -401,8 +373,8 @@ def _text_to_notion_blocks(text: str) -> list[dict]:
     return blocks
 
 
-def post_to_notion(digest_data: dict, pending_requests: list[dict]) -> None:
-    """Create all Notion pages for the digest and update request statuses."""
+def post_to_notion(digest_data: dict, pending_requests: list[dict]) -> str:
+    """Create all Notion pages for the digest and update request statuses. Returns digest page ID."""
     # 1. Create digest page
     digest_props = build_notion_properties(f"{TODAY} Daily Digest", "digest")
     digest_children = _text_to_notion_blocks(digest_data["digest_summary"])
@@ -433,28 +405,99 @@ def post_to_notion(digest_data: dict, pending_requests: list[dict]) -> None:
         if request_id:
             update_notion_page_status(request_id, "Done")
             logger.info("Marked request %s as Done", request_id)
+            
+    return digest_page_id
+
+
+# --- Logging and Notifications ---
+
+
+def log_execution(status: str, duration_sec: float, digest_id: str | None = None) -> None:
+    """Log the execution status to the Notion log database."""
+    if not NOTION_LOG_DATABASE_ID:
+        return
+        
+    try:
+        props = {
+            "Title": {"title": [{"text": {"content": f"Execution {TODAY}"}}]},
+            "Status": {"select": {"name": status}},
+            "Duration (s)": {"number": duration_sec},
+            "Date": {"date": {"start": TODAY}},
+        }
+        if digest_id:
+            props["Digest"] = {"relation": [{"id": digest_id}]}
+
+        body = {
+            "parent": {"database_id": NOTION_LOG_DATABASE_ID},
+            "properties": props,
+        }
+
+        resp = requests.post(
+            f"{NOTION_BASE_URL}/pages",
+            headers=_notion_headers(),
+            json=body,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        logger.info("Execution logged successfully.")
+    except Exception as e:
+        logger.warning("Failed to log execution: %s", e)
+
+
+def send_webhook_notification(digest_url: str) -> None:
+    """Send a notification to the configured webhook (e.g., Discord or Slack)."""
+    if not WEBHOOK_URL:
+        return
+
+    try:
+        message = {
+            "content": f"🚀 今日のDaily Dev Digestが生成されました！\n{digest_url}",
+        }
+        resp = requests.post(WEBHOOK_URL, json=message, timeout=10)
+        resp.raise_for_status()
+        logger.info("Webhook notification sent.")
+    except Exception as e:
+        logger.warning("Failed to send webhook notification: %s", e)
 
 
 # --- Main ---
 
-
 def main():
-    logger.info("Starting Daily Dev Digest for %s", TODAY)
+    start_time = datetime.now()
+    status = "Failed"
+    digest_id = None
+    
+    try:
+        logger.info("Starting Daily Dev Digest for %s", TODAY)
 
-    github_activity = fetch_github_activity(TARGET_GITHUB_USERNAME)
-    logger.info("GitHub activity fetched")
+        github_activity = fetch_github_activity(TARGET_GITHUB_USERNAME)
+        logger.info("GitHub activity fetched")
 
-    pending_requests = query_notion_requests()
-    logger.info("Found %d pending requests", len(pending_requests))
+        pending_requests = query_notion_requests()
+        logger.info("Found %d pending requests", len(pending_requests))
 
-    rating_feedback = query_notion_ratings()
-    logger.info("Rating feedback analyzed")
+        rating_feedback = query_notion_ratings()
+        logger.info("Rating feedback analyzed")
+        
+        system_prompt = load_system_prompt()
 
-    digest_data = generate_digest(github_activity, pending_requests, rating_feedback)
-    logger.info("Digest generated by Claude")
+        digest_data = generate_digest(github_activity, pending_requests, rating_feedback, system_prompt)
+        logger.info("Digest generated by Claude")
 
-    post_to_notion(digest_data, pending_requests)
-    logger.info("Daily Dev Digest completed successfully")
+        digest_id = post_to_notion(digest_data, pending_requests)
+        logger.info("Daily Dev Digest completed successfully")
+        
+        digest_url = f"https://notion.so/{digest_id.replace('-', '')}"
+        send_webhook_notification(digest_url)
+        status = "Success"
+        
+    except Exception as e:
+        logger.error("Error during Daily Dev Digest: %s", e)
+        raise
+    finally:
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        log_execution(status, duration, digest_id)
 
 
 if __name__ == "__main__":
