@@ -1,0 +1,147 @@
+{
+  "name": "Trend Analysis with RAG (Prototype)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "name": "Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://news.ycombinator.com/rss",
+        "method": "GET"
+      },
+      "name": "Fetch HackerNews RSS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "extract",
+        "extractedValues": {
+          "values": [
+            {
+              "key": "title",
+              "cssSelector": "title"
+            },
+            {
+              "key": "link",
+              "cssSelector": "link"
+            }
+          ]
+        }
+      },
+      "name": "Parse RSS Node",
+      "type": "n8n-nodes-base.html",
+      "typeVersion": 1,
+      "position": [
+        500,
+        300
+      ],
+      "notesInFlow": true,
+      "notes": "簡易パース用"
+    },
+    {
+      "parameters": {
+        "command": "python /home/user/code/news_tracker/rag_trend_analyzer.py --trend '{\"title\":\"Next.js 15 Released\",\"description\":\"React Compiler and caching improvements\"}'"
+      },
+      "name": "Execute RAG Script (CLI)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        700,
+        300
+      ],
+      "notesInFlow": true,
+      "notes": "プロトタイプ用モック（実際は前のノードの出力を引数につなぐ）"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://discord.com/api/webhooks/dummy",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content",
+              "value": "={{$json[\"stdout\"]}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Discord Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        900,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule": {
+      "main": [
+        [
+          {
+            "node": "Fetch HackerNews RSS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch HackerNews RSS": {
+      "main": [
+        [
+          {
+            "node": "Parse RSS Node",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse RSS Node": {
+      "main": [
+        [
+          {
+            "node": "Execute RAG Script (CLI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute RAG Script (CLI)": {
+      "main": [
+        [
+          {
+            "node": "Discord Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {}
+}
