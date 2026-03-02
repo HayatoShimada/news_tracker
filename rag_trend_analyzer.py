@@ -12,6 +12,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.documents import Document
+from langchain.retrievers import EnsembleRetriever
+from langchain_community.retrievers import BM25Retriever
 
 # --- Configuration ---
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -86,7 +88,18 @@ def analyze_trend(query: str, vectorstore: FAISS):
     RAG pipeline: Retrive context -> Generate analysis
     """
     llm = init_llm()
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
+    dense_retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
+
+    # BM25の準備（ベクトルストア内に格納されているドキュメント群を取り出す）
+    docs = list(vectorstore.docstore._dict.values())
+    bm25_retriever = BM25Retriever.from_documents(docs)
+    bm25_retriever.k = 2
+
+    # ハイブリッド検索のアンサンブル。比重は等倍 (0.5, 0.5)
+    ensemble_retriever = EnsembleRetriever(
+        retrievers=[dense_retriever, bm25_retriever], 
+        weights=[0.5, 0.5]
+    )
 
     template = """あなたは優秀なリサーチアシスタントです。
 以下の過去のユーザーの関心事（コンテキスト）を踏まえて、入力された新しいトレンドニュースを分析し、
@@ -110,7 +123,7 @@ def analyze_trend(query: str, vectorstore: FAISS):
 
     # RAG Chain
     rag_chain = (
-        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        {"context": ensemble_retriever | format_docs, "question": RunnablePassthrough()}
         | prompt
         | llm
         | StrOutputParser()

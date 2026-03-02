@@ -241,10 +241,16 @@ def extract_json_from_response(response) -> dict:
             text_parts.append(block.text)
     full_text = "".join(text_parts)
 
-    match = re.search(r"```json\s*(.*?)\s*```", full_text, re.DOTALL)
+    match = re.search(r"```json\s*(.*?)(?:\s*```|$)", full_text, re.DOTALL)
     if not match:
         raise ValueError(f"No JSON code block found in response: {full_text[:500]}")
-    return json.loads(match.group(1))
+    
+    json_str = match.group(1).strip()
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        # If it's cut off, try basic repairing or just fail with better precision
+        raise ValueError(f"Failed to parse JSON (maybe truncated?). Error: {e}\nRaw JSON: {json_str[:500]}...")
 
 
 def generate_digest(
@@ -274,19 +280,19 @@ def generate_digest(
 
     response = client.messages.create(
         model="claude-sonnet-4-5-20250929",
-        max_tokens=4096,
+        max_tokens=8192,
         system=system_prompt,
         tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
         messages=messages,
     )
 
     # Handle pause_turn (partial response that needs continuation)
-    while response.stop_reason == "pause_turn":
+    while response.stop_reason in ("pause_turn", "max_tokens"):
         messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": "Please continue."})
         response = client.messages.create(
             model="claude-sonnet-4-5-20250929",
-            max_tokens=4096,
+            max_tokens=8192,
             system=system_prompt,
             tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
             messages=messages,
@@ -420,8 +426,8 @@ def log_execution(status: str, duration_sec: float, digest_id: str | None = None
     try:
         props = {
             "Title": {"title": [{"text": {"content": f"Execution {TODAY}"}}]},
-            "Status": {"select": {"name": status}},
-            "Duration (s)": {"number": duration_sec},
+            "Status": {"status": {"name": status}},
+            "Duration": {"number": round(duration_sec, 2)},
             "Date": {"date": {"start": TODAY}},
         }
         if digest_id:

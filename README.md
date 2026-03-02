@@ -11,7 +11,9 @@ Notion API  →  過去のRating・未処理Requestを取得
      ↓
 Claude API  →  AI分析（web search + フィードバック反映 + リクエスト回答）
      ↓
-Notion API  →  データベースにアイテム作成・Request更新
+Notion API  →  データベースにアイテム作成・Request更新・実行ログ記録
+     ↓
+Webhook     →  SlackやDiscord等のWebhookへ完了通知 (オプション)
      ↓
 GitHub Actions  →  毎朝8時(JST)に自動実行
 ```
@@ -57,16 +59,30 @@ Fine-grained が使えない場合はこちら:
 1. Notion で新しいデータベースを作成
 2. 以下のプロパティを追加:
 
-| プロパティ名 | 型 | 選択肢 |
-|---|---|---|
-| `Type` | マルチセレクト | `digest`, `learning`, `news`, `action`, `idea`, `request` |
-| `Status` | ステータス | `Not Started`, `In Progress`, `Done` |
-| `Date` | 日付 | — |
-| `Priority` | マルチセレクト | `High`, `Medium`, `Low` |
-| `Rating` | マルチセレクト | `★1`, `★2`, `★3`, `★4`, `★5` |
-| `Source` | マルチセレクト | `claude`, `user` |
-| `Parent Digest` | リレーション | 同じデータベースへのセルフリレーション |
-| `Tags` | マルチセレクト | （自動で追加される） |
+| プロパティ名    | 型             | 選択肢                                                    |
+| --------------- | -------------- | --------------------------------------------------------- |
+| `Type`          | マルチセレクト | `digest`, `learning`, `news`, `action`, `idea`, `request` |
+| `Status`        | ステータス     | `Not Started`, `In Progress`, `Done`                      |
+| `Date`          | 日付           | —                                                         |
+| `Priority`      | マルチセレクト | `High`, `Medium`, `Low`                                   |
+| `Rating`        | マルチセレクト | `★1`, `★2`, `★3`, `★4`, `★5`                              |
+| `Source`        | マルチセレクト | `claude`, `user`                                          |
+| `Parent Digest` | リレーション   | 同じデータベースへのセルフリレーション                    |
+| `Tags`          | マルチセレクト | （自動で追加される）                                      |
+
+#### 実行ログデータベース作成 (オプション)
+
+実行ごとの結果や処理時間を記録したい場合は、別のデータベースを作成し、以下のプロパティを追加します。
+
+| プロパティ名 | 型           | 説明                               |
+| ------------ | ------------ | ---------------------------------- |
+| `Title`      | タイトル     | `Execution YYYY-MM-DD`             |
+| `Status`     | ステータス   | `Success`, `Failed`                |
+| `Duration`   | 数値         | —                                  |
+| `Date`       | 日付         | —                                  |
+| `Digest`     | リレーション | メインデータベースへのリレーション |
+
+作成後、メインデータベースと同様にインテグレーションを接続し、データベースIDを取得して **`NOTION_LOG_DATABASE_ID`** として設定します。
 
 #### Notion Integration 作成
 
@@ -97,13 +113,15 @@ https://www.notion.so/xxxxx?v=yyyyy
 
 ### 4. 環境変数の一覧
 
-| キー | 必須 | 説明 |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | Yes | Claude API キー |
-| `NOTION_TOKEN` | Yes | Notion Integration トークン |
-| `NOTION_DATABASE_ID` | Yes | Notion データベース ID |
-| `GITHUB_TOKEN` | No | GitHub Personal Access Token（レートリミット緩和） |
-| `TARGET_GITHUB_USERNAME` | No | 対象の GitHub ユーザー名（デフォルト: `HayatoShimada`） |
+| キー                     | 必須 | 説明                                                    |
+| ------------------------ | ---- | ------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`      | Yes  | Claude API キー                                         |
+| `NOTION_TOKEN`           | Yes  | Notion Integration トークン                             |
+| `NOTION_DATABASE_ID`     | Yes  | Notion データベース ID                                  |
+| `GITHUB_TOKEN`           | No   | GitHub Personal Access Token（レートリミット緩和）      |
+| `TARGET_GITHUB_USERNAME` | No   | 対象の GitHub ユーザー名（デフォルト: `HayatoShimada`） |
+| `WEBHOOK_URL`            | No   | 実行結果を通知するWebhook URL (Discord, Slack等)        |
+| `NOTION_LOG_DATABASE_ID` | No   | 実行ログ記録用のNotion データベース ID                  |
 
 ---
 
@@ -112,6 +130,12 @@ https://www.notion.so/xxxxx?v=yyyyy
 ### ローカル実行
 
 ```bash
+# 仮想環境を作成して有効化（推奨）
+python3 -m venv venv
+source venv/bin/activate
+
+# 必要なパッケージをインストール
+# ※RAG(Trend Analyzer)を使用する場合は、langchainやsentence-transformersなどの追加依存が含まれます
 pip install -r requirements.txt
 
 cp .env.example .env
@@ -130,6 +154,8 @@ export $(cat .env | xargs) && python daily_digest.py
    - `NOTION_TOKEN`
    - `NOTION_DATABASE_ID`
    - `GH_PAT`（GitHub Token、任意）
+   - `WEBHOOK_URL`（Webhook通知用、任意）
+   - `NOTION_LOG_DATABASE_ID`（実行ログ記録用、任意）
 
    **Variables**:
    - `TARGET_GITHUB_USERNAME`（デフォルト: `HayatoShimada`）
@@ -146,13 +172,13 @@ export $(cat .env | xargs) && python daily_digest.py
 
 毎回の実行で以下が作成されます:
 
-| Type | 件数 | 内容 |
-|---|---|---|
-| `digest` | 1 | 日次サマリー。本文に開発状況まとめ |
-| `learning` | 3 | プロジェクトに関連する学習トピック |
-| `news` | 3 | web search で取得した技術ニュース |
-| `action` | 3-5 | 優先度付き ToDo リスト |
-| `idea` | 1-2 | プロジェクトアイデア |
+| Type       | 件数 | 内容                               |
+| ---------- | ---- | ---------------------------------- |
+| `digest`   | 1    | 日次サマリー。本文に開発状況まとめ |
+| `learning` | 3    | プロジェクトに関連する学習トピック |
+| `news`     | 3    | web search で取得した技術ニュース  |
+| `action`   | 3-5  | 優先度付き ToDo リスト             |
+| `idea`     | 1-2  | プロジェクトアイデア               |
 
 ### 生成物を評価する
 
@@ -196,11 +222,11 @@ Notion データベースに手動で行を追加:
 
 ## コスト目安
 
-| サービス | コスト |
-|---|---|
-| Claude API | 1回あたり約 $0.01〜0.05（Sonnet + web search） |
-| GitHub API | 無料 |
-| Notion API | 無料 |
+| サービス       | コスト                                                    |
+| -------------- | --------------------------------------------------------- |
+| Claude API     | 1回あたり約 $0.01〜0.05（Sonnet + web search）            |
+| GitHub API     | 無料                                                      |
+| Notion API     | 無料                                                      |
 | GitHub Actions | 無料（パブリック）/ 2000分/月（プライベート Free プラン） |
 
 月額約 **$1〜2** 程度です。

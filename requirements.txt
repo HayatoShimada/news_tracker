@@ -1,2 +1,8 @@
 anthropic>=0.45.0
 requests>=2.31.0
+langchain>=0.1.0
+langchain-anthropic>=0.1.0
+langchain-community>=0.0.10
+sentence-transformers>=2.2.0
+faiss-cpu>=1.7.0
+rank_bm25>=0.2.2
