@@ -440,6 +440,8 @@ def log_execution(status: str, duration_sec: float, digest_id: str | None = None
         )
         resp.raise_for_status()
         logger.info("Execution logged successfully.")
+    except requests.exceptions.HTTPError as e:
+        logger.warning(f"Failed to log execution HTTPError: {e.response.text}")
     except Exception as e:
         logger.warning("Failed to log execution: %s", e)
 
